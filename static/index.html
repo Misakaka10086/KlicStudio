@@ -410,6 +410,12 @@
 				</select>
 			</div>
 
+			<!-- 复制并重命名 -->
+			<div class="formGroup">
+				<label for="copy-rename-srt-toggle">复制并重命名:</label>
+				<input type="checkbox" id="copy-rename-srt-toggle">
+			</div>
+
 			<!-- 配音 -->
 			<div class="formGroup">
 				<label>配音:</label>
@@ -513,6 +519,7 @@
 	const verticalMajorTitle = document.getElementById("subtitle-text-1");
 	const verticalMinorTitle = document.getElementById("subtitle-text-2");
 	const tips = document.getElementById("tips");
+	const copyRenameSrtToggle = document.getElementById("copy-rename-srt-toggle");
 
 	const API_SUBMIT_URL = "/api/capability/subtitleTask";
 	const API_PROGRESS_URL = "/api/capability/subtitleTask";
@@ -527,10 +534,12 @@
 		if (!translationToggle.checked) {
 			bilingualToggle.checked = false;
 			voiceoverToggle.checked = false;
+			copyRenameSrtToggle.checked = false;
 		}
 		voiceoverToggle.disabled = !translationToggle.checked;
 		bilingualToggle.disabled = !translationToggle.checked;
-		voiceoverToggle.disabled = !translationToggle.checked;
+		copyRenameSrtToggle.disabled = !translationToggle.checked;
+		// voiceoverToggle.disabled = !translationToggle.checked; // This line is redundant
 		bilingualPosition.disabled = !bilingualToggle.checked;
 		voiceoverVoice.disabled = !voiceoverToggle.checked;
 		voiceFileInput.disabled = !voiceoverToggle.checked;
@@ -618,6 +627,7 @@
 			tts: voiceoverToggle.checked ? 1 : 2,
 			modal_filter: document.getElementById("filler-filter-toggle").checked ? 1 : 2,
 			embed_subtitle_video_type: embedSubtitleVideoTypeToggle.checked ? embedSubtitleVideoType.value : 'none',
+			copy_rename_srt: copyRenameSrtToggle.checked ? 1 : 2,
 		};
 
 		if (formData.tts === 1) {

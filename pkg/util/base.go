@@ -186,6 +186,33 @@ func CopyFile(src, dst string) error {
 	return destinationFile.Sync()
 }
 
+// GetFileNameWithoutExt extracts the filename without its extension from a path or URL string.
+// For URLs, it takes the last path segment.
+func GetFileNameWithoutExt(pathOrURL string) string {
+	// Treat as path first
+	fileName := filepath.Base(pathOrURL)
+
+	// If it might be a URL and filepath.Base didn't give a good result (e.g. returned ".")
+	// or if we want to be more robust with URLs.
+	// A simple check: if it contains "://" it's likely a URL.
+	if strings.Contains(pathOrURL, "://") {
+		// Attempt to grab the last segment of the URL path
+		parts := strings.Split(pathOrURL, "/")
+		if len(parts) > 0 {
+			potentialFileName := parts[len(parts)-1]
+			// Remove query parameters if any
+			potentialFileName = strings.Split(potentialFileName, "?")[0]
+			if potentialFileName != "" {
+				fileName = potentialFileName
+			}
+		}
+	}
+
+	// Remove extension
+	ext := filepath.Ext(fileName)
+	return strings.TrimSuffix(fileName, ext)
+}
+
 // SanitizePathName 清理字符串，使其成为合法路径名
 func SanitizePathName(name string) string {
 	var illegalChars *regexp.Regexp

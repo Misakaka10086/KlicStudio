@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"io"
 )
 
 func (s Service) StartSubtitleTask(req dto.StartVideoSubtitleTaskReq) (*dto.StartVideoSubtitleTaskResData, error) {
@@ -114,6 +115,7 @@ func (s Service) StartSubtitleTask(req dto.StartVideoSubtitleTaskReq) (*dto.Star
 		EmbedSubtitleVideoType:  req.EmbedSubtitleVideoType,
 		VerticalVideoMajorTitle: req.VerticalMajorTitle,
 		VerticalVideoMinorTitle: req.VerticalMinorTitle,
+		CopyAndRenameSrt:        req.CopyAndRenameSrt,
 		MaxWordOneLine:          12, // 默认值
 	}
 	if req.OriginLanguageWordOneLine != 0 {
@@ -156,6 +158,70 @@ func (s Service) StartSubtitleTask(req dto.StartVideoSubtitleTaskReq) (*dto.Star
 			stepParam.TaskPtr.FailReason = err.Error()
 			return
 		}
+
+		// Add this block for Copy and Rename logic
+		if stepParam.CopyAndRenameSrt == 1 { // Assuming 1 means 'Yes' for this flag
+			log.GetLogger().Info("Copy and Rename SRT feature enabled", zap.String("taskId", taskId))
+
+			sourceSrtPath := stepParam.BilingualSrtFilePath
+			if sourceSrtPath == "" {
+				log.GetLogger().Error("BilingualSrtFilePath is empty, cannot copy and rename", zap.String("taskId", taskId))
+			} else {
+				// Determine baseName from InputVideoPath or Link
+				var originalFileName string
+				if stepParam.InputVideoPath != "" {
+					originalFileName = util.GetFileNameWithoutExt(stepParam.InputVideoPath)
+				} else if stepParam.Link != "" {
+					// For URLs, extract the last path segment as a proxy for the filename
+					// This part might need refinement based on how util.GetFileNameWithoutExt handles URLs
+					urlParts := strings.Split(stepParam.Link, "/")
+					fileNameFromURL := urlParts[len(urlParts)-1]
+					// Further clean up if there are query parameters in fileNameFromURL
+					fileNameFromURL = strings.Split(fileNameFromURL, "?")[0]
+					originalFileName = util.GetFileNameWithoutExt(fileNameFromURL)
+				} else {
+					log.GetLogger().Error("Could not determine original filename for SRT renaming", zap.String("taskId", taskId))
+					originalFileName = taskId // Fallback to taskId if no other name is found
+				}
+
+				if originalFileName == "" { // Should not happen if fallback to taskId is used, but as a safeguard
+					log.GetLogger().Error("Original filename resolved to empty, using taskId as fallback for SRT name", zap.String("taskId", taskId))
+					originalFileName = taskId
+				}
+
+				baseName := util.SanitizePathName(originalFileName) // Sanitize it
+
+				destDir := filepath.Join(stepParam.TaskBasePath, "all")
+				if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
+					log.GetLogger().Error("Failed to create destination directory for copy and rename", zap.String("destDir", destDir), zap.Error(err), zap.String("taskId", taskId))
+				} else {
+					destSrtPath := filepath.Join(destDir, baseName+".srt")
+
+					// Perform file copy
+					sourceFile, err := os.Open(sourceSrtPath)
+					if err != nil {
+						log.GetLogger().Error("Failed to open source SRT for copy and rename", zap.String("sourceSrtPath", sourceSrtPath), zap.Error(err), zap.String("taskId", taskId))
+					} else {
+						defer sourceFile.Close()
+
+						destFile, err := os.Create(destSrtPath)
+						if err != nil {
+							log.GetLogger().Error("Failed to create destination SRT for copy and rename", zap.String("destSrtPath", destSrtPath), zap.Error(err), zap.String("taskId", taskId))
+						} else {
+							defer destFile.Close()
+
+							_, err := io.Copy(destFile, sourceFile)
+							if err != nil {
+								log.GetLogger().Error("Failed to copy SRT content for copy and rename", zap.Error(err), zap.String("taskId", taskId))
+							} else {
+								log.GetLogger().Info("Successfully copied and renamed SRT file", zap.String("source", sourceSrtPath), zap.String("destination", destSrtPath), zap.String("taskId", taskId))
+							}
+						}
+					}
+				}
+			}
+		}
+
 		err = s.srtFileToSpeech(ctx, &stepParam)
 		if err != nil {
 			log.GetLogger().Error("StartVideoSubtitleTask srtFileToSpeech err", zap.Any("req", req), zap.Error(err))

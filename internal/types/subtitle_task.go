@@ -197,6 +197,7 @@ type SubtitleTaskStepParam struct {
 	VerticalVideoMinorTitle     string
 	MaxWordOneLine              int    // 字幕一行最多显示多少个字
 	VideoWithTtsFilePath        string // 替换源视频的音频为tts结果后的视频路径
+	CopyAndRenameSrt            uint8
 }
 
 type SrtSentence struct {

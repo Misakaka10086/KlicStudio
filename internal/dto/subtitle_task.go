@@ -17,6 +17,7 @@ type StartVideoSubtitleTaskReq struct {
 	VerticalMajorTitle        string   `json:"vertical_major_title"`
 	VerticalMinorTitle        string   `json:"vertical_minor_title"`
 	OriginLanguageWordOneLine int      `json:"origin_language_word_one_line"`
+	CopyAndRenameSrt          uint8    `json:"copy_rename_srt"`
 }
 
 type StartVideoSubtitleTaskResData struct {
