@@ -1,9 +1,10 @@
 name: release
 
 on:
-  push:  # 任何 push 都会触发工作流
-    branches:
-      - '**'
+  push:
+    tags:
+      - "v*"
+      - "v*-*"
 
 permissions:
   contents: write
