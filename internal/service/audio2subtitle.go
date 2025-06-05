@@ -770,106 +770,88 @@ func jumpFindMaxIncreasingSubArray(words []types.Word) (int, int, []types.Word) 
 	return startIdx, endIdx, result
 }
 
+const minimalDuration = 0.001 // 1 millisecond
+
 func generateSrtWithTimestamps(srtBlocks []*util.SrtBlock, basePath string, segmentIdx int, originLanguage types.StandardLanguageCode, originalWords []types.Word, resultType types.SubtitleResultType, maxWordOneLine int) error {
-	if len(srtBlocks) == 0 { // No text blocks to process
+	if len(srtBlocks) == 0 {
 		return nil
 	}
 
-	// Filter words early on
 	filteredWords := make([]types.Word, 0, len(originalWords))
-	if len(originalWords) > 0 { // Only filter if there are words
+	if len(originalWords) > 0 {
 		for _, word := range originalWords {
-			// Condition a: Positive duration
 			hasPositiveDuration := word.Start < word.End
-
-			// Condition b: Not a special marker (heuristic: not starting with '[' and ending with ']')
-			// Also check for empty or whitespace-only text.
 			trimmedText := strings.TrimSpace(word.Text)
 			isNotSpecialMarker := !(strings.HasPrefix(trimmedText, "[") && strings.HasSuffix(trimmedText, "]"))
 			isNotEmptyText := trimmedText != ""
-
 			if hasPositiveDuration && isNotSpecialMarker && isNotEmptyText {
 				filteredWords = append(filteredWords, word)
 			} else {
-				log.GetLogger().Debug("Filtered out word token",
-					zap.String("text", word.Text),
-					zap.Float64("start", word.Start),
-					zap.Float64("end", word.End))
+				log.GetLogger().Debug("Filtered out word token", zap.String("text", word.Text), zap.Float64("start", word.Start), zap.Float64("end", word.End))
 			}
 		}
 	}
 
-	// If, after filtering, there are no words left, it might be impossible to get timestamps.
-	if len(filteredWords) == 0 && len(originalWords) > 0 { // originalWords had content, but all got filtered
-		log.GetLogger().Warn("All word tokens were filtered out; timestamping will likely rely on fallbacks or fail.",
-			zap.Int("originalWordCount", len(originalWords)),
-			zap.Int("segmentIndex", segmentIdx))
-		// Proceeding with empty filteredWords will likely cause getSentenceTimestamps to fail for all blocks,
-		// leading to fallback timestamps. This is acceptable under the new fallback logic.
+	if len(filteredWords) == 0 && len(originalWords) > 0 {
+		log.GetLogger().Warn("All word tokens were filtered out; timestamping will rely on fallbacks or fail.", zap.Int("originalWordCount", len(originalWords)), zap.Int("segmentIndex", segmentIdx))
 	}
 
-	var lastTs float64 // This tracks the end time of the last successfully processed srtBlock
-	shortOriginSrtMap := make(map[int][]util.SrtBlock, 0)
+	var lastSuccessfullyProcessedBlockEndTime float64 // Tracks end time of the last block that had its timestamp successfully determined by getSentenceTimestamps
+	var currentEffectiveTime float64 // Tracks the time to use for the start of the next block, advances with fallbacks
 
 	tsOffset := float64(config.Conf.App.SegmentDuration) * 60 * float64(segmentIdx)
+	shortOriginSrtMap := make(map[int][]util.SrtBlock, 0)
 
 	for _, srtBlock := range srtBlocks {
 		if srtBlock.OriginLanguageSentence == "" {
-			// It's already an empty sentence, timestamp doesn't make much sense.
-			// We could assign a zero-duration timestamp or leave it empty.
-			// For now, let's ensure it doesn't cause issues later by assigning a default.
-			srtBlock.Timestamp = util.FormatTime(float32(lastTs+tsOffset)) + " --> " + util.FormatTime(float32(lastTs+tsOffset))
+			// Assign a zero-duration timestamp based on currentEffectiveTime
+			srtBlock.Timestamp = util.FormatTime(float32(currentEffectiveTime+tsOffset)) + " --> " + util.FormatTime(float32(currentEffectiveTime+tsOffset))
+			// No advancement of currentEffectiveTime for truly empty sentences unless desired.
+			// Or advance by minimalDuration if they should occupy some timeline space. For now, no advance.
 			continue
 		}
 
-		// Use filteredWords now
-		sentenceTs, sentenceWordsFromGetter, currentBlockEndTs, err := getSentenceTimestamps(filteredWords, srtBlock.OriginLanguageSentence, lastTs, originLanguage)
+		// Attempt to get timestamps using filteredWords and the end time of the last *successfully* processed block
+		sentenceTs, sentenceWordsFromGetter, currentBlockActualEndTs, err := getSentenceTimestamps(filteredWords, srtBlock.OriginLanguageSentence, lastSuccessfullyProcessedBlockEndTime, originLanguage)
 
 		if err != nil {
-			log.GetLogger().Warn("getSentenceTimestamps failed for sentence, using fallback timestamp",
+			log.GetLogger().Warn("getSentenceTimestamps failed, using progressive fallback timestamp",
 				zap.String("sentence", srtBlock.OriginLanguageSentence),
 				zap.Error(err),
-				zap.Float64("lastValidEndTime", lastTs),
+				zap.Float64("anchorTime", currentEffectiveTime),
 				zap.Int("segmentIndex", segmentIdx))
 
-			// Fallback: create a zero-duration timestamp starting from lastTs.
-			// This makes the subtitle appear, but its timing will be incorrect.
-			// It's better than a missing line for debugging.
-			// Ensure start time is not before lastTs if we were to give it duration.
-			// For zero duration, start and end are the same.
-			fallbackStartTime := lastTs
-			if fallbackStartTime < 0 { // Should not happen if lastTs is managed properly
-				fallbackStartTime = 0
-			}
+			// Fallback: use currentEffectiveTime and advance it by minimalDuration
 			srtBlock.Timestamp = fmt.Sprintf("%s --> %s",
-				util.FormatTime(float32(fallbackStartTime+tsOffset)),
-				util.FormatTime(float32(fallbackStartTime+tsOffset)))
-			// We don't update lastTs here because this block's timing is uncertain.
-			// sentenceWords might also be unreliable here, so subsequent logic might need care.
+				util.FormatTime(float32(currentEffectiveTime+tsOffset)),
+				util.FormatTime(float32(currentEffectiveTime+minimalDuration+tsOffset)))
+			currentEffectiveTime += minimalDuration // Advance for the next block
 
-		} else if currentBlockEndTs < lastTs {
-			log.GetLogger().Warn("Timestamp for current block ends before previous block, using fallback",
+		} else if currentBlockActualEndTs < lastSuccessfullyProcessedBlockEndTime { // Check against last *successful* block's end time
+			log.GetLogger().Warn("Timestamp for current block overlaps with last successful block, using progressive fallback",
 				zap.String("sentence", srtBlock.OriginLanguageSentence),
-				zap.Float64("currentBlockEndTime", currentBlockEndTs),
-				zap.Float64("previousBlockEndTime", lastTs),
+				zap.Float64("currentBlockEndTime", currentBlockActualEndTs),
+				zap.Float64("lastSuccessfulEndTime", lastSuccessfullyProcessedBlockEndTime),
 				zap.Int("segmentIndex", segmentIdx))
 
-			// Fallback for overlapping/out-of-order timestamp
-			fallbackStartTime := lastTs
+			// Fallback: use currentEffectiveTime and advance it
 			srtBlock.Timestamp = fmt.Sprintf("%s --> %s",
-				util.FormatTime(float32(fallbackStartTime+tsOffset)),
-				util.FormatTime(float32(fallbackStartTime+tsOffset))) // Zero duration at end of last valid block
-			// Again, don't update lastTs.
+				util.FormatTime(float32(currentEffectiveTime+tsOffset)),
+				util.FormatTime(float32(currentEffectiveTime+minimalDuration+tsOffset)))
+			currentEffectiveTime += minimalDuration // Advance for the next block
 
 		} else {
-			// Success case
+			// Success case: Timestamps are valid and in order relative to the last successful one
 			srtBlock.Timestamp = fmt.Sprintf("%s --> %s",
 				util.FormatTime(float32(sentenceTs.Start+tsOffset)),
 				util.FormatTime(float32(sentenceTs.End+tsOffset)))
-			lastTs = currentBlockEndTs // Update lastTs with the valid end time of the current block
+
+			// Update both trackers to the actual end time of this successfully processed block
+			lastSuccessfullyProcessedBlockEndTime = currentBlockActualEndTs
+			currentEffectiveTime = currentBlockActualEndTs
 		}
 
-		// The logic for shortOriginSrtMap uses sentenceTs (from getSentenceTimestamps)
+		// Conditional logic for shortOriginSrtMap (ensure it uses sentenceWordsFromGetter from successful calls)
 		// and sentenceWordsFromGetter. If getSentenceTimestamps failed, sentenceTs and sentenceWordsFromGetter
 		// might be zero/empty. This needs to be handled gracefully by the shortOriginSrtMap logic,
 		// or we should skip that logic if timestamps are uncertain.
@@ -956,13 +938,10 @@ func generateSrtWithTimestamps(srtBlocks []*util.SrtBlock, basePath string, segm
 	// 写入字幕文件
 	for _, srtBlock := range srtBlocks {
 		_, _ = finalBilingualSrtFile.WriteString(fmt.Sprintf("%d\n", srtBlock.Index))
-		// Ensure Timestamp is not empty; if it is after fallbacks, it might indicate an issue.
-		// However, the fallback logic above tries to always set it.
 		if srtBlock.Timestamp == "" {
-			// This case should ideally not be reached if fallbacks are effective.
-			// If it is, assign a default zero-duration timestamp at the very last moment.
 			log.GetLogger().Error("Timestamp was still empty before writing srtBlock, applying emergency fallback", zap.Int("srtBlockIndex", srtBlock.Index), zap.String("sentence", srtBlock.OriginLanguageSentence))
-			emergencyTs := util.FormatTime(float32(lastTs+tsOffset)) // Use last known good end time
+			// Use currentEffectiveTime for emergency fallback, as lastSuccessfullyProcessedBlockEndTime might be stale
+			emergencyTs := util.FormatTime(float32(currentEffectiveTime+tsOffset))
 			srtBlock.Timestamp = emergencyTs + " --> " + emergencyTs
 		}
 		_, _ = finalBilingualSrtFile.WriteString(srtBlock.Timestamp + "\n")
