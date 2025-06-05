@@ -124,3 +124,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # DOCKER_USERNAME 环境变量也不再需要
           # DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  notify:
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+    steps:
+      - name: Send ntfy notification
+        uses: ./.github/workflows/ntfy-notify.yml@main
+        with:
+          status: ${{ needs.build.outputs.build_status }}
+        secrets: inherit # 这样会自动传递 NTFY_SERVER_URL, NTFY_TOPIC_NAME, NTFY_ACCESS_TOKEN
+                        # (如果它们在调用方仓库/组织的 secrets 中存在)
