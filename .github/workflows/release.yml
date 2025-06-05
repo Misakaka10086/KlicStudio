@@ -75,6 +75,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
+          name: desktop-binaries # 给 artifact 一个明确的名称
           path: build/*
           retention-days: 1
 
