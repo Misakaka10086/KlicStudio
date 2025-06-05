@@ -770,111 +770,181 @@ func jumpFindMaxIncreasingSubArray(words []types.Word) (int, int, []types.Word) 
 	return startIdx, endIdx, result
 }
 
-func generateSrtWithTimestamps(srtBlocks []*util.SrtBlock, basePath string, segmentIdx int, originLanguage types.StandardLanguageCode, words []types.Word, resultType types.SubtitleResultType, maxWordOneLine int) error {
-	if len(srtBlocks) == 0 || len(words) == 0 {
+func generateSrtWithTimestamps(srtBlocks []*util.SrtBlock, basePath string, segmentIdx int, originLanguage types.StandardLanguageCode, originalWords []types.Word, resultType types.SubtitleResultType, maxWordOneLine int) error {
+	if len(srtBlocks) == 0 { // No text blocks to process
 		return nil
 	}
 
-	// 获取每个字幕块的时间戳
-	var lastTs float64
-	shortOriginSrtMap := make(map[int][]util.SrtBlock, 0)
-	for _, srtBlock := range srtBlocks {
-		if srtBlock.OriginLanguageSentence == "" {
-			continue
-		}
-		sentenceTs, sentenceWords, ts, err := getSentenceTimestamps(words, srtBlock.OriginLanguageSentence, lastTs, originLanguage)
-		if err != nil || ts < lastTs {
-			continue
-		}
-		tsOffset := float64(config.Conf.App.SegmentDuration) * 60 * float64(segmentIdx)
-		srtBlock.Timestamp = fmt.Sprintf("%s --> %s", util.FormatTime(float32(sentenceTs.Start+tsOffset)), util.FormatTime(float32(sentenceTs.End+tsOffset)))
+	// Filter words early on
+	filteredWords := make([]types.Word, 0, len(originalWords))
+	if len(originalWords) > 0 { // Only filter if there are words
+		for _, word := range originalWords {
+			// Condition a: Positive duration
+			hasPositiveDuration := word.Start < word.End
 
-		// 生成短句子的英文字幕
-		var (
-			originSentence string
-			startWord      types.Word
-			endWord        types.Word
-		)
+			// Condition b: Not a special marker (heuristic: not starting with '[' and ending with ']')
+			// Also check for empty or whitespace-only text.
+			trimmedText := strings.TrimSpace(word.Text)
+			isNotSpecialMarker := !(strings.HasPrefix(trimmedText, "[") && strings.HasSuffix(trimmedText, "]"))
+			isNotEmptyText := trimmedText != ""
 
-		if len(sentenceWords) <= maxWordOneLine {
-			shortOriginSrtMap[srtBlock.Index] = append(shortOriginSrtMap[srtBlock.Index], util.SrtBlock{
-				Index:                  srtBlock.Index,
-				Timestamp:              fmt.Sprintf("%s --> %s", util.FormatTime(float32(sentenceTs.Start+tsOffset)), util.FormatTime(float32(sentenceTs.End+tsOffset))),
-				OriginLanguageSentence: srtBlock.OriginLanguageSentence,
-			})
-			lastTs = ts
-			continue
-		}
-
-		thisLineWord := maxWordOneLine
-		if len(sentenceWords) > maxWordOneLine && len(sentenceWords) <= 2*maxWordOneLine {
-			thisLineWord = len(sentenceWords)/2 + 1
-		} else if len(sentenceWords) > 2*maxWordOneLine && len(sentenceWords) <= 3*maxWordOneLine {
-			thisLineWord = len(sentenceWords)/3 + 1
-		} else if len(sentenceWords) > 3*maxWordOneLine && len(sentenceWords) <= 4*maxWordOneLine {
-			thisLineWord = len(sentenceWords)/4 + 1
-		} else if len(sentenceWords) > 4*maxWordOneLine && len(sentenceWords) <= 5*maxWordOneLine {
-			thisLineWord = len(sentenceWords)/5 + 1
-		}
-
-		i := 1
-		nextStart := true
-		for _, word := range sentenceWords {
-			if nextStart {
-				startWord = word
-				if startWord.Start < lastTs {
-					startWord.Start = lastTs
-				}
-				if startWord.Start < endWord.End {
-					startWord.Start = endWord.End
-				}
-
-				if startWord.Start < sentenceTs.Start {
-					startWord.Start = sentenceTs.Start
-				}
-				// 首个单词的开始时间戳大于句子的结束时间戳，说明这个单词找错了，放弃掉
-				if startWord.End > sentenceTs.End {
-					originSentence += word.Text + " "
-					continue
-				}
-				originSentence += word.Text + " "
-				endWord = startWord
-				i++
-				nextStart = false
-				continue
+			if hasPositiveDuration && isNotSpecialMarker && isNotEmptyText {
+				filteredWords = append(filteredWords, word)
+			} else {
+				log.GetLogger().Debug("Filtered out word token",
+					zap.String("text", word.Text),
+					zap.Float64("start", word.Start),
+					zap.Float64("end", word.End))
 			}
-
-			originSentence += word.Text + " "
-			if endWord.End < word.End {
-				endWord = word
-			}
-
-			if endWord.End > sentenceTs.End {
-				endWord.End = sentenceTs.End
-			}
-
-			if i%thisLineWord == 0 && i > 1 {
-				shortOriginSrtMap[srtBlock.Index] = append(shortOriginSrtMap[srtBlock.Index], util.SrtBlock{
-					Index:                  srtBlock.Index,
-					Timestamp:              fmt.Sprintf("%s --> %s", util.FormatTime(float32(startWord.Start+tsOffset)), util.FormatTime(float32(endWord.End+tsOffset))),
-					OriginLanguageSentence: originSentence,
-				})
-				originSentence = ""
-				nextStart = true
-			}
-			i++
 		}
-
-		if originSentence != "" {
-			shortOriginSrtMap[srtBlock.Index] = append(shortOriginSrtMap[srtBlock.Index], util.SrtBlock{
-				Index:                  srtBlock.Index,
-				Timestamp:              fmt.Sprintf("%s --> %s", util.FormatTime(float32(startWord.Start+tsOffset)), util.FormatTime(float32(endWord.End+tsOffset))),
-				OriginLanguageSentence: originSentence,
-			})
-		}
-		lastTs = ts
 	}
 
+	// If, after filtering, there are no words left, it might be impossible to get timestamps.
+	if len(filteredWords) == 0 && len(originalWords) > 0 { // originalWords had content, but all got filtered
+		log.GetLogger().Warn("All word tokens were filtered out; timestamping will likely rely on fallbacks or fail.",
+			zap.Int("originalWordCount", len(originalWords)),
+			zap.Int("segmentIndex", segmentIdx))
+		// Proceeding with empty filteredWords will likely cause getSentenceTimestamps to fail for all blocks,
+		// leading to fallback timestamps. This is acceptable under the new fallback logic.
+	}
+
+	var lastTs float64 // This tracks the end time of the last successfully processed srtBlock
+	shortOriginSrtMap := make(map[int][]util.SrtBlock, 0)
+
+	tsOffset := float64(config.Conf.App.SegmentDuration) * 60 * float64(segmentIdx)
+
+	for _, srtBlock := range srtBlocks {
+		if srtBlock.OriginLanguageSentence == "" {
+			// It's already an empty sentence, timestamp doesn't make much sense.
+			// We could assign a zero-duration timestamp or leave it empty.
+			// For now, let's ensure it doesn't cause issues later by assigning a default.
+			srtBlock.Timestamp = util.FormatTime(float32(lastTs+tsOffset)) + " --> " + util.FormatTime(float32(lastTs+tsOffset))
+			continue
+		}
+
+		// Use filteredWords now
+		sentenceTs, sentenceWordsFromGetter, currentBlockEndTs, err := getSentenceTimestamps(filteredWords, srtBlock.OriginLanguageSentence, lastTs, originLanguage)
+
+		if err != nil {
+			log.GetLogger().Warn("getSentenceTimestamps failed for sentence, using fallback timestamp",
+				zap.String("sentence", srtBlock.OriginLanguageSentence),
+				zap.Error(err),
+				zap.Float64("lastValidEndTime", lastTs),
+				zap.Int("segmentIndex", segmentIdx))
+
+			// Fallback: create a zero-duration timestamp starting from lastTs.
+			// This makes the subtitle appear, but its timing will be incorrect.
+			// It's better than a missing line for debugging.
+			// Ensure start time is not before lastTs if we were to give it duration.
+			// For zero duration, start and end are the same.
+			fallbackStartTime := lastTs
+			if fallbackStartTime < 0 { // Should not happen if lastTs is managed properly
+				fallbackStartTime = 0
+			}
+			srtBlock.Timestamp = fmt.Sprintf("%s --> %s",
+				util.FormatTime(float32(fallbackStartTime+tsOffset)),
+				util.FormatTime(float32(fallbackStartTime+tsOffset)))
+			// We don't update lastTs here because this block's timing is uncertain.
+			// sentenceWords might also be unreliable here, so subsequent logic might need care.
+
+		} else if currentBlockEndTs < lastTs {
+			log.GetLogger().Warn("Timestamp for current block ends before previous block, using fallback",
+				zap.String("sentence", srtBlock.OriginLanguageSentence),
+				zap.Float64("currentBlockEndTime", currentBlockEndTs),
+				zap.Float64("previousBlockEndTime", lastTs),
+				zap.Int("segmentIndex", segmentIdx))
+
+			// Fallback for overlapping/out-of-order timestamp
+			fallbackStartTime := lastTs
+			srtBlock.Timestamp = fmt.Sprintf("%s --> %s",
+				util.FormatTime(float32(fallbackStartTime+tsOffset)),
+				util.FormatTime(float32(fallbackStartTime+tsOffset))) // Zero duration at end of last valid block
+			// Again, don't update lastTs.
+
+		} else {
+			// Success case
+			srtBlock.Timestamp = fmt.Sprintf("%s --> %s",
+				util.FormatTime(float32(sentenceTs.Start+tsOffset)),
+				util.FormatTime(float32(sentenceTs.End+tsOffset)))
+			lastTs = currentBlockEndTs // Update lastTs with the valid end time of the current block
+		}
+
+		// The logic for shortOriginSrtMap uses sentenceTs (from getSentenceTimestamps)
+		// and sentenceWordsFromGetter. If getSentenceTimestamps failed, sentenceTs and sentenceWordsFromGetter
+		// might be zero/empty. This needs to be handled gracefully by the shortOriginSrtMap logic,
+		// or we should skip that logic if timestamps are uncertain.
+		// For now, let's assume the shortOriginSrtMap logic can handle zero/empty sentenceTs/sentenceWordsFromGetter
+		// or it will be part of a subsequent refinement if it also breaks.
+		// The primary goal here is to fix the main srtBlock.Timestamp.
+
+		// Conditional logic for shortOriginSrtMap
+		// This part might need to be conditional on 'err == nil' from getSentenceTimestamps
+		// if it relies heavily on accurate sentenceTs.Start/End from a successful call.
+		if err == nil && len(sentenceWordsFromGetter) > 0 { // Only proceed if getSentenceTimestamps was successful
+			// Pass sentenceWordsFromGetter (which is the 'readableSentenceWords' from getSentenceTimestamps)
+			// to the short form generation logic.
+			if len(sentenceWordsFromGetter) <= maxWordOneLine {
+				shortOriginSrtMap[srtBlock.Index] = append(shortOriginSrtMap[srtBlock.Index], util.SrtBlock{
+					Index:                  srtBlock.Index,
+					Timestamp:              fmt.Sprintf("%s --> %s", util.FormatTime(float32(sentenceTs.Start+tsOffset)), util.FormatTime(float32(sentenceTs.End+tsOffset))),
+					OriginLanguageSentence: srtBlock.OriginLanguageSentence,
+				})
+			} else {
+				// More complex splitting logic for shortOriginSrtMap
+				// This part also relies on sentenceTs.Start and sentenceTs.End
+				// and the content of sentenceWordsFromGetter.
+				var tempOriginSentence string
+				var tempStartWord types.Word
+				var tempEndWord types.Word
+
+				// The detailed splitting logic from the original code:
+				currentWordIndex := 0
+				thisLineWordCount := maxWordOneLine
+				if len(sentenceWordsFromGetter) > maxWordOneLine { // Adjust splitting based on actual words for the sentence
+					if len(sentenceWordsFromGetter)/2 > 0 && len(sentenceWordsFromGetter)/2 < maxWordOneLine {
+						thisLineWordCount = len(sentenceWordsFromGetter)/2 + len(sentenceWordsFromGetter)%2
+					} else if len(sentenceWordsFromGetter)/3 > 0 && len(sentenceWordsFromGetter)/3 < maxWordOneLine {
+						thisLineWordCount = len(sentenceWordsFromGetter)/3 + len(sentenceWordsFromGetter)%3
+					} // Add more rules if necessary or a more general approach
+				}
+
+				for currentWordIndex < len(sentenceWordsFromGetter) {
+					lineWordCount := 0
+					tempStartWord = sentenceWordsFromGetter[currentWordIndex]
+					tempEndWord = tempStartWord
+					tempOriginSentence = ""
+
+					for lineWordCount < thisLineWordCount && currentWordIndex < len(sentenceWordsFromGetter) {
+						word := sentenceWordsFromGetter[currentWordIndex]
+						if tempOriginSentence != "" {
+							tempOriginSentence += " "
+						}
+						tempOriginSentence += word.Text
+						tempEndWord = word
+						lineWordCount++
+						currentWordIndex++
+					}
+
+					// Ensure start time of this sub-block is not before its overall sentence start time
+					subBlockStartTime := tempStartWord.Start
+					if subBlockStartTime < sentenceTs.Start { subBlockStartTime = sentenceTs.Start }
+					// Ensure end time of this sub-block is not after its overall sentence end time
+					subBlockEndTime := tempEndWord.End
+					if subBlockEndTime > sentenceTs.End { subBlockEndTime = sentenceTs.End }
+					// Ensure start is not after end
+					if subBlockStartTime > subBlockEndTime { subBlockStartTime = subBlockEndTime }
+
+					shortOriginSrtMap[srtBlock.Index] = append(shortOriginSrtMap[srtBlock.Index], util.SrtBlock{
+						Index:                  srtBlock.Index, // Should this be a sub-index?
+						Timestamp:              fmt.Sprintf("%s --> %s", util.FormatTime(float32(subBlockStartTime+tsOffset)), util.FormatTime(float32(subBlockEndTime+tsOffset))),
+						OriginLanguageSentence: tempOriginSentence,
+					})
+				}
+			}
+		}
+	}
+
+	// ... (rest of the file writing logic) ...
 	// 保存带时间戳的原始字幕
 	finalBilingualSrtFileName := fmt.Sprintf("%s/%s", basePath, fmt.Sprintf(types.SubtitleTaskSplitBilingualSrtFileNamePattern, segmentIdx))
 	finalBilingualSrtFile, err := os.Create(finalBilingualSrtFileName)
@@ -886,6 +956,15 @@ func generateSrtWithTimestamps(srtBlocks []*util.SrtBlock, basePath string, segm
 	// 写入字幕文件
 	for _, srtBlock := range srtBlocks {
 		_, _ = finalBilingualSrtFile.WriteString(fmt.Sprintf("%d\n", srtBlock.Index))
+		// Ensure Timestamp is not empty; if it is after fallbacks, it might indicate an issue.
+		// However, the fallback logic above tries to always set it.
+		if srtBlock.Timestamp == "" {
+			// This case should ideally not be reached if fallbacks are effective.
+			// If it is, assign a default zero-duration timestamp at the very last moment.
+			log.GetLogger().Error("Timestamp was still empty before writing srtBlock, applying emergency fallback", zap.Int("srtBlockIndex", srtBlock.Index), zap.String("sentence", srtBlock.OriginLanguageSentence))
+			emergencyTs := util.FormatTime(float32(lastTs+tsOffset)) // Use last known good end time
+			srtBlock.Timestamp = emergencyTs + " --> " + emergencyTs
+		}
 		_, _ = finalBilingualSrtFile.WriteString(srtBlock.Timestamp + "\n")
 		if resultType == types.SubtitleResultTypeBilingualTranslationOnTop {
 			_, _ = finalBilingualSrtFile.WriteString(srtBlock.TargetLanguageSentence + "\n")
@@ -896,7 +975,7 @@ func generateSrtWithTimestamps(srtBlocks []*util.SrtBlock, basePath string, segm
 			_, _ = finalBilingualSrtFile.WriteString(srtBlock.TargetLanguageSentence + "\n\n")
 		}
 	}
-
+	// ... (rest of the function for shortOriginSrtMap files) ...
 	// 保存带时间戳的字幕,长中文+短英文（示意，也支持其他语言）
 	srtShortOriginMixedFileName := fmt.Sprintf("%s/%s", basePath, fmt.Sprintf(types.SubtitleTaskSplitShortOriginMixedSrtFileNamePattern, segmentIdx))
 	srtShortOriginMixedFile, err := os.Create(srtShortOriginMixedFileName)
@@ -911,30 +990,36 @@ func generateSrtWithTimestamps(srtBlocks []*util.SrtBlock, basePath string, segm
 	if err != nil {
 		return fmt.Errorf("audioToSubtitle generateTimestamps create srtShortOriginFile err: %w", err)
 	}
-	defer srtShortOriginMixedFile.Close()
+	defer srtShortOriginFile.Close() // Corrected: was srtShortOriginMixedFile.Close()
 
 	mixedSrtNum := 1
 	shortSrtNum := 1
 	// 写入短英文混合字幕文件
 	for _, srtBlock := range srtBlocks {
-		srtShortOriginMixedFile.WriteString(fmt.Sprintf("%d\n", mixedSrtNum))
-		srtShortOriginMixedFile.WriteString(srtBlock.Timestamp + "\n")
-		srtShortOriginMixedFile.WriteString(srtBlock.TargetLanguageSentence + "\n\n")
-		mixedSrtNum++
-		shortOriginSentence := shortOriginSrtMap[srtBlock.Index]
-		for _, shortOriginBlock := range shortOriginSentence {
+		// This part writes the main translated sentence first for the mixed file
+		if srtBlock.Timestamp != "" { // Only write if timestamp is valid
 			srtShortOriginMixedFile.WriteString(fmt.Sprintf("%d\n", mixedSrtNum))
-			srtShortOriginMixedFile.WriteString(shortOriginBlock.Timestamp + "\n")
-			srtShortOriginMixedFile.WriteString(shortOriginBlock.OriginLanguageSentence + "\n\n")
+			srtShortOriginMixedFile.WriteString(srtBlock.Timestamp + "\n")
+			srtShortOriginMixedFile.WriteString(srtBlock.TargetLanguageSentence + "\n\n")
 			mixedSrtNum++
+		}
 
-			srtShortOriginFile.WriteString(fmt.Sprintf("%d\n", shortSrtNum))
-			srtShortOriginFile.WriteString(shortOriginBlock.Timestamp + "\n")
-			srtShortOriginFile.WriteString(shortOriginBlock.OriginLanguageSentence + "\n\n")
-			shortSrtNum++
+		// Then write the short origin sentences
+		shortOriginSentences := shortOriginSrtMap[srtBlock.Index]
+		for _, shortOriginBlock := range shortOriginSentences {
+			if shortOriginBlock.Timestamp != "" { // Only write if timestamp is valid
+				srtShortOriginMixedFile.WriteString(fmt.Sprintf("%d\n", mixedSrtNum))
+				srtShortOriginMixedFile.WriteString(shortOriginBlock.Timestamp + "\n")
+				srtShortOriginMixedFile.WriteString(shortOriginBlock.OriginLanguageSentence + "\n\n")
+				mixedSrtNum++
+
+				srtShortOriginFile.WriteString(fmt.Sprintf("%d\n", shortSrtNum))
+				srtShortOriginFile.WriteString(shortOriginBlock.Timestamp + "\n")
+				srtShortOriginFile.WriteString(shortOriginBlock.OriginLanguageSentence + "\n\n")
+				shortSrtNum++
+			}
 		}
 	}
-
 	return nil
 }
 
