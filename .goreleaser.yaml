@@ -1,6 +1,9 @@
 version: 2
 
-builds:
+# project_name: your_project_name # 建议明确指定项目名称，如果 GoReleaser 无法自动推断
+                                 # 它会从你的 go.mod 文件或者 git remote 中尝试获取
+
+builds: # 这部分是针对 ./cmd/server/main.go 的构建
   - env:
       - CGO_ENABLED=0
     goos:
@@ -8,48 +11,45 @@ builds:
       - linux
       - windows
     main: ./cmd/server/main.go
+    # binary: your_server_binary_name # 可以指定输出的二进制文件名，默认为项目名
 
-# Docker 构建配置
-dockers:
-  - image_templates:
-      - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}-amd64"
-      - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest-amd64"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY_OWNER }}/{{.ProjectName}}"
-  - image_templates:
-      - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}-arm64"
-      - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest-arm64"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY_OWNER }}/{{.ProjectName}}"
+# Docker 构建配置 (已移除)
+# dockers:
+#   - image_templates:
+#       - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}-amd64"
+#       - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest-amd64"
+#     dockerfile: Dockerfile
+#     use: buildx
+#     build_flag_templates:
+#       - "--platform=linux/amd64"
+#       # ...
+#   - image_templates:
+#       - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}-arm64"
+#       - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest-arm64"
+#     dockerfile: Dockerfile
+#     use: buildx
+#     build_flag_templates:
+#       - "--platform=linux/arm64"
+#       # ...
 
-docker_manifests:
-  - name_template: "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}"
-    image_templates:
-      - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}-amd64"
-      - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}-arm64"
-  - name_template: "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest"
-    image_templates:
-      - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest-amd64"
-      - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest-arm64"
+# Docker Manifests 配置 (已移除)
+# docker_manifests:
+#   - name_template: "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}"
+#     image_templates:
+#       - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}-amd64"
+#       - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:{{.Version}}-arm64"
+#   - name_template: "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest"
+#     image_templates:
+#       - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest-amd64"
+#       - "{{ tolower .Env.DOCKER_USERNAME }}/{{ tolower .ProjectName }}:latest-arm64"
 
-archives:
-  - formats: ["binary"]
+archives: # 这部分用于处理上面 builds 定义的 ./cmd/server/main.go 的产物
+  - id: server-binaries # 给一个ID，更清晰
+    builds: # 明确指定这个 archive 是针对哪个 build ID 的 (如果 builds 有 id 的话)
+            # 如果 builds 没有 id，它会应用到所有 builds
+    formats: ["binary"] # 这意味着 GoReleaser 不会创建 .zip 或 .tar.gz，而是直接使用编译后的二进制文件作为资产
     name_template: >-
-      {{ .ProjectName }}_
+      {{ .ProjectName }}_server_ # 添加 _server_ 以区分桌面版
       {{- .Version }}_
       {{- if eq .Os "darwin" }}macOS_{{ .Arch }}
       {{- else if and (eq .Os "windows") (eq .Arch "amd64") }}{{ title .Os }}
@@ -61,8 +61,13 @@ archives:
       {{- end }}
 
 release:
-  extra_files:
-    - glob: "build/*"
+  # github: # 通常 GoReleaser 可以自动推断 owner 和 name
+  #   owner: your_github_username_or_org
+  #   name: your_repo_name
+  prerelease: auto # 如果是预发布标签 (e.g., v1.0.0-rc1)，标记为 prerelease
+  # draft: true # 如果想创建为草稿版本
+  extra_files: # 这部分用于包含由 GitHub Action 构建的桌面应用二进制文件
+    - glob: "build/*" # 假设桌面二进制文件在 `build/` 目录下
 
 changelog:
   sort: asc
