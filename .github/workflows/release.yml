@@ -124,17 +124,3 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # DOCKER_USERNAME 环境变量也不再需要
           # DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-
-  notify:
-      runs-on: ubuntu-latest
-      needs: goreleaser # 依赖 goreleaser job
-      if: always()
-      steps:
-        - name: Send ntfy notification
-          uses: ./.github/workflows/ntfy-notify.yml@main
-          with:
-            status: ${{ needs.goreleaser.result }} # <--- 修正这里！从 goreleaser 获取 result
-            # 可选：为了更丰富的通知内容，你可以添加这些
-            branch_name: ${{ github.ref_name }} # 标签名
-            commit_message: "Release ${{ github.ref_name }} status: ${{ needs.goreleaser.result }}"
-          secrets: inherit
