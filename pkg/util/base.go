@@ -217,11 +217,12 @@ func GetFileNameWithoutExt(pathOrURL string) string {
 func SanitizePathName(name string) string {
 	var illegalChars *regexp.Regexp
 	if runtime.GOOS == "windows" {
-		// Windows 特殊字符
-		illegalChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1F]`)
+		// Windows 特殊字符, including [ and ] as they can be problematic in some contexts,
+		// though they are technically legal in NTFS paths. Better to sanitize for broader compatibility.
+		illegalChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1F\[\]]`)
 	} else {
-		// POSIX 系统：只禁用 / 和空字节
-		illegalChars = regexp.MustCompile(`[/\x00]`)
+		// POSIX 系统：禁用 / 和空字节, and also [ and ] for filepath.Glob compatibility
+		illegalChars = regexp.MustCompile(`[/\x00\[\]]`)
 	}
 
 	sanitized := illegalChars.ReplaceAllString(name, "_")
