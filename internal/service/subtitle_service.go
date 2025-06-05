@@ -191,7 +191,9 @@ func (s Service) StartSubtitleTask(req dto.StartVideoSubtitleTaskReq) (*dto.Star
 
 				baseName := util.SanitizePathName(originalFileName) // Sanitize it
 
-				destDir := filepath.Join(stepParam.TaskBasePath, "all")
+				// *** THIS IS THE CORRECTED LINE ***
+				destDir := filepath.Join("./tasks", "all")
+
 				if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
 					log.GetLogger().Error("Failed to create destination directory for copy and rename", zap.String("destDir", destDir), zap.Error(err), zap.String("taskId", taskId))
 				} else {
@@ -214,7 +216,7 @@ func (s Service) StartSubtitleTask(req dto.StartVideoSubtitleTaskReq) (*dto.Star
 							if err != nil {
 								log.GetLogger().Error("Failed to copy SRT content for copy and rename", zap.Error(err), zap.String("taskId", taskId))
 							} else {
-								log.GetLogger().Info("Successfully copied and renamed SRT file", zap.String("source", sourceSrtPath), zap.String("destination", destSrtPath), zap.String("taskId", taskId))
+								log.GetLogger().Info("Successfully copied and renamed SRT file to global 'all' directory", zap.String("source", sourceSrtPath), zap.String("destination", destSrtPath), zap.String("taskId", taskId))
 							}
 						}
 					}
